@@ -382,6 +382,8 @@ class AgentExchangeClient:
                     "productType": "USDT-FUTURES",
                     "marginMode": "crossed",
                     "marginCoin": "USDT",
+                    "side": "sell" if position.side == "LONG" else "buy",
+                    "planType": "pos_loss",
                     "stopLossTriggerPrice": str(rounded_sl),
                     "stopLossTriggerType": "fill_price",
                     "stopLossExecutePrice": "0",  # 시장가 체결
@@ -437,6 +439,8 @@ class AgentExchangeClient:
                     pending_resp = await self.exchange.private_mix_get_v2_mix_order_orders_plan_pending({
                         "symbol": symbol,
                         "productType": "USDT-FUTURES",
+                        "marginCoin": "USDT",
+                        "isPlan": "plan"
                     })
                     data = pending_resp.get("data") or {}
                     entrusted_list = data.get("entrustedList", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
