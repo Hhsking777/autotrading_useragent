@@ -470,20 +470,9 @@ class AgentExchangeClient:
                     )
                     callback_ratio = 0.5
                 # triggerPrice: Bitget track_plan의 활성화 가격 (activation threshold)
-                # 활성화 후 Bitget은 활성화 시점 현재가부터 트래킹 시작 (triggerPrice 기준 아님)
-                #
-                # SELL (LONG 청산): 활성화 조건 = mark_price <= triggerPrice
-                #   mark_price * 2로 설정하면 현재가(73,000) <= 146,000 → 항상 즉시 활성화
-                #
-                # BUY (SHORT 청산): 활성화 조건 = mark_price >= triggerPrice
-                #   mark_price * 0.01로 설정하면 현재가(73,000) >= 730 → 항상 즉시 활성화
-                #   단, Bitget이 triggerPrice를 tracking 초기 LOW로 사용할 경우
-                #   730 × 1.005 = 733.65 이미 초과 → 즉시 발동 위험 (SHORT 케이스 테스트 필요)
-                if position.side == "LONG":
-                    trigger_price = round(mark_price * 2, 1)
-                else:
-                    # SHORT: triggerPrice를 낮게 → 즉시 활성화 (테스트 전 LONG 케이스 우선 검증)
-                    trigger_price = round(mark_price * 0.01, 4)
+                # 활성화 조건은 LONG/SHORT 모두 mark_price <= triggerPrice
+                # mark_price * 2로 설정 → 항상 즉시 활성화
+                trigger_price = round(mark_price * 2, 1)
                 resp = await self.exchange.private_mix_post_v2_mix_order_place_plan_order({
                     "symbol": symbol,
                     "productType": "USDT-FUTURES",
