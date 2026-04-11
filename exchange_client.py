@@ -405,6 +405,19 @@ class AgentExchangeClient:
                 if not position:
                     logger.warning(f"No position found to set SL for {symbol}")
                     return False
+                # Bitget validates SL against current mark price (not entry price).
+                # Pre-validate to avoid error 40834 and surface a clear message.
+                if position.mark_price:
+                    if position.side == "LONG" and rounded_sl >= position.mark_price:
+                        raise ExchangeError(
+                            f"set_stop_loss failed for {symbol}: LONG SL({rounded_sl}) >= "
+                            f"mark_price({position.mark_price}) — price dropped past SL"
+                        )
+                    if position.side == "SHORT" and rounded_sl <= position.mark_price:
+                        raise ExchangeError(
+                            f"set_stop_loss failed for {symbol}: SHORT SL({rounded_sl}) <= "
+                            f"mark_price({position.mark_price}) — price rose past SL"
+                        )
                 hold_side = "buy" if position.side == "LONG" else "sell"
                 await self.exchange.private_mix_post_v2_mix_order_place_tpsl_order({
                     "symbol": symbol,
@@ -437,6 +450,12 @@ class AgentExchangeClient:
                 logger.info(f"Stop loss already set at same price for {symbol} @ {stop_loss_price}")
                 return True
             logger.error(f"Failed to set stop loss for {symbol}: {e}")
+            if "40834" in err_str:
+                # LONG: SL must be below current price
+                raise ExchangeError(f"set_stop_loss failed for {symbol}: SL({stop_loss_price})이 현재가보다 높습니다 (LONG 포지션)")
+            if "40835" in err_str:
+                # SHORT: SL must be above current price
+                raise ExchangeError(f"set_stop_loss failed for {symbol}: SL({stop_loss_price})이 현재가보다 낮습니다 (SHORT 포지션)")
             raise ExchangeError(f"set_stop_loss failed for {symbol}: {e}")
 
     async def set_trailing_stop(self, symbol: str, trailing_distance: float) -> bool:
