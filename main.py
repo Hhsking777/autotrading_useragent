@@ -46,6 +46,7 @@ _exchange_client: Optional[AgentExchangeClient] = None
 # ===== 수동 포지션 감지 상태 =====
 _known_positions: Dict[str, Optional[dict]] = {}   # symbol → position dict (None = no position)
 _bot_executed_symbols: set = set()                  # 봇이 market_entry 실행한 심볼 (수동 오감지 방지)
+_pending_bot_dca_ids: Dict[str, set] = {}          # 봇이 등록한 DCA 지정가 주문 ID (심볼 → set of order_id)
 _trailing_stop_active: set = set()                  # trailing stop이 활성화된 심볼 집합
 _known_sl_prices: Dict[str, str] = {}              # symbol → SL 가격 문자열 (MANUAL_CLOSE 오분류 방지)
 
@@ -225,8 +226,8 @@ async def _post_error_to_central(error_type: str, file_name: str, function_name:
         logger.warning("[AgentError] 오류 리포팅 실패 (무시)")
 
 
-async def _notify_manual_position(symbol: str, pos: dict, is_addon: bool):
-    """신규진입 or 추가매수 콜백"""
+async def _notify_manual_position(symbol: str, pos: dict, is_addon: bool, is_bot_dca: bool = False):
+    """신규진입 or 추가매수 콜백. is_bot_dca=True이면 서버에서 Telegram 생략, AI 재분석만 실행."""
     payload = {
         "symbol": symbol,
         "side": pos.get("side", ""),
@@ -234,6 +235,7 @@ async def _notify_manual_position(symbol: str, pos: dict, is_addon: bool):
         "entry_price": str(pos.get("entryPrice", "0")),
         "leverage": int(pos.get("leverage", 10)),
         "is_addon": is_addon,
+        "is_bot_dca": is_bot_dca,
         "mark_price": str(pos.get("markPrice") or "0"),
     }
     await _post_to_central("/api/agent/manual-position", payload)
@@ -471,6 +473,12 @@ async def detect_manual_positions():
                         if symbol in _bot_executed_symbols:
                             _bot_executed_symbols.discard(symbol)
                             logger.info(f"[ManualDetect] 봇 추가매수 감지 스킵: {symbol}")
+                        elif _pending_bot_dca_ids.get(symbol):
+                            _pending_bot_dca_ids[symbol].pop()
+                            if not _pending_bot_dca_ids[symbol]:
+                                del _pending_bot_dca_ids[symbol]
+                            logger.info(f"[ManualDetect] 봇 DCA 체결 감지: {symbol} — AI 재분석 트리거")
+                            await _notify_manual_position(symbol, pos, is_addon=True, is_bot_dca=True)
                         else:
                             logger.info(f"[ManualDetect] 수동 추가매수 감지: {symbol}")
                             await _notify_manual_position(symbol, pos, is_addon=True)
@@ -543,6 +551,7 @@ async def detect_manual_positions():
                     await _notify_position_closed(symbol, exit_reason_override=detected_exit_reason)
                     del _known_positions[symbol]
                     _known_sl_prices.pop(symbol, None)
+                    _pending_bot_dca_ids.pop(symbol, None)
 
         except Exception as e:
             logger.error(f"[ManualDetect] 폴링 오류: {e}")
@@ -675,7 +684,8 @@ async def execute_order(request: Request, execute_req: ExecuteRequest):
                 await client.switch_to_one_way_mode(symbol)
                 await client.set_leverage(symbol, request.leverage)
 
-            # 시장가 진입
+            # 시장가 진입 (플래그를 주문 전에 설정해야 polling loop와의 race condition 방지)
+            _bot_executed_symbols.add(symbol)
             order_id = await client.place_market_order(
                 symbol, request.side, Decimal(request.qty)
             )
@@ -711,7 +721,11 @@ async def execute_order(request: Request, execute_req: ExecuteRequest):
                     if dca_id:
                         dca_order_ids.append(dca_id)
 
-            _bot_executed_symbols.add(symbol)
+            # DCA 주문 ID 추적 (나중에 체결 시 수동 추가매수로 오분류 방지)
+            if dca_order_ids:
+                if symbol not in _pending_bot_dca_ids:
+                    _pending_bot_dca_ids[symbol] = set()
+                _pending_bot_dca_ids[symbol].update(dca_order_ids)
             logger.info(f"market_entry completed: {symbol}")
             return {
                 "success": True,
@@ -840,6 +854,10 @@ async def execute_order(request: Request, execute_req: ExecuteRequest):
                     )
                     if dca_id:
                         dca_order_ids.append(dca_id)
+
+            # adjust에서 재배치된 DCA 주문 ID도 추적 (수동 추가매수 오분류 방지)
+            if dca_order_ids:
+                _pending_bot_dca_ids.setdefault(symbol, set()).update(dca_order_ids)
 
             logger.info(f"adjust completed: {symbol}")
             return {
