@@ -800,6 +800,14 @@ async def execute_order(request: Request, execute_req: ExecuteRequest):
                     }
                 _trailing_stop_active.add(symbol)  # 성공 시 추적 등록
                 _known_sl_prices.pop(symbol, None)  # trailing stop 전환 시 고정 SL 가격 제거
+                # Bitget: trailing stop(track_plan)과 SL(pos_loss)이 독립 주문이므로 손익분기 SL 병행 설정
+                if client.exchange_id == "bitget":
+                    try:
+                        await client.set_stop_loss(symbol, position.entry_price)
+                        _known_sl_prices[symbol] = str(position.entry_price)  # breakeven SL 발동 시 MANUAL_CLOSE 오분류 방지
+                        logger.info(f"[adjust] Bitget breakeven SL set @ {position.entry_price} alongside trailing stop: {symbol}")
+                    except Exception as e:
+                        logger.warning(f"[adjust] Bitget breakeven SL failed (trailing stop still active): {symbol} — {e}")
             elif request.sl_price:
                 sl_set = await client.set_stop_loss(symbol, Decimal(str(request.sl_price)))
                 if sl_set:
